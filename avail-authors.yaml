@@ -1,0 +1,18 @@
+# the institution ID is used to ensure only authors from a specific institution are included
+
+filters:
+  # is_active: true
+  # is_public: true
+  # filter by group ID (set to None to disable)
+  instituion_id: 1068
+
+authors:
+  - name: "Miao Yu"
+  - name: "John Atanbori"
+  - name: "Bashir Al-Diri"
+  - name: "James Brown"
+    orcid: "0000-0001-7636-4554"
+  - name: "Christos Frantzidis"
+  - name: "Wenting Duan"
+  - name: "Mamatha Thota"
+  - name: "Farhan Riaz"
