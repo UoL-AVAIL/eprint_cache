@@ -106,3 +106,35 @@ jobs:
             ./output/*.csv
             ./output/*.bib
           retention-days: 30
+          
+  publish-bibliography:
+    needs: update-cache
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download bibliography
+        uses: actions/download-artifact@v4
+        with:
+          name: outputs
+          path: publications
+  
+      - name: Publish bibliography release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: publications-${{ github.run_id }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -s publications/avail.bib
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" publications/avail.bib --clobber
+            gh release edit "$RELEASE_TAG" --latest
+          else
+            gh release create "$RELEASE_TAG" publications/avail.bib \
+              --target "$SOURCE_SHA" --latest \
+              --title "AVAIL publications" \
+              --notes "Generated from the successful AVAIL Figshare cache run."
+          fi
