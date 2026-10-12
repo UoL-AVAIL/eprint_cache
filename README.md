@@ -74,12 +74,9 @@ Use `--debug` for additional logging. `--output`, `--output-all`, `--max-retries
 
 The workflow uses an AVAIL-specific cache namespace. No LCAS or UoA11 workflows run.
 
-Nexus publishing is optional. For non-pull-request runs it is enabled when both repository secrets are set:
+The workflow retains the CSV and BibTeX exports as GitHub artifacts. It does not use Nexus or require `AVAIL_REGISTRY_PUSHER` or `AVAIL_REGISTRY_TOKEN`. `FIGSHARE_TOKEN` remains optional.
 
-- `AVAIL_REGISTRY_PUSHER`: Nexus publishing username.
-- `AVAIL_REGISTRY_TOKEN`: Nexus publishing password/token.
-
-The configured destination is `https://avail.lincoln.ac.uk/repository/`, repository `misc`, directory `bibtex`. Without these secrets, publishing is skipped and the workflow still provides downloadable artifacts. `FIGSHARE_TOKEN` is optional. A local export does not verify Nexus credentials or publishing.
+To populate the AVAIL GitHub Pages site, its build workflow needs to run the exporter and place `avail.bib` at `_bibliography/papers.bib` before building Jekyll. That site integration is separate from this repository and has not yet been implemented.
 
 ## Verification
 

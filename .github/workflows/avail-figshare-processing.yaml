@@ -31,9 +31,6 @@ jobs:
   update-cache:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    env:
-      NEXUS_USERNAME: ${{ secrets.AVAIL_REGISTRY_PUSHER }}
-      NEXUS_PASSWORD: ${{ secrets.AVAIL_REGISTRY_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -99,45 +96,6 @@ jobs:
         run: |
           cd ./output
           python ../generate_stats.py --all-csv figshare_articles_all.csv --dedup-csv figshare_articles.csv >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Nexus Repo Publish bibtex
-        if: ${{ github.event_name != 'pull_request' && env.NEXUS_USERNAME != '' && env.NEXUS_PASSWORD != '' }}
-        uses: sonatype-nexus-community/nexus-repo-github-action@master
-        with:
-          serverUrl: https://avail.lincoln.ac.uk/repository/
-          username: ${{ secrets.AVAIL_REGISTRY_PUSHER }}
-          password: ${{ secrets.AVAIL_REGISTRY_TOKEN }}
-          format: raw
-          repository: misc
-          coordinates: directory=bibtex
-          assets: filename=avail.bib
-          filename: ./output/avail.bib
-
-      - name: Nexus Repo Publish figshare articles without duplicates CSV
-        if: ${{ github.event_name != 'pull_request' && env.NEXUS_USERNAME != '' && env.NEXUS_PASSWORD != '' }}
-        uses: sonatype-nexus-community/nexus-repo-github-action@master
-        with:
-          serverUrl: https://avail.lincoln.ac.uk/repository/
-          username: ${{ secrets.AVAIL_REGISTRY_PUSHER }}
-          password: ${{ secrets.AVAIL_REGISTRY_TOKEN }}
-          format: raw
-          repository: misc
-          coordinates: directory=bibtex
-          assets: filename=figshare_articles.csv
-          filename: ./output/figshare_articles.csv
-
-      - name: Nexus Repo Publish all figshare articles CSV
-        if: ${{ github.event_name != 'pull_request' && env.NEXUS_USERNAME != '' && env.NEXUS_PASSWORD != '' }}
-        uses: sonatype-nexus-community/nexus-repo-github-action@master
-        with:
-          serverUrl: https://avail.lincoln.ac.uk/repository/
-          username: ${{ secrets.AVAIL_REGISTRY_PUSHER }}
-          password: ${{ secrets.AVAIL_REGISTRY_TOKEN }}
-          format: raw
-          repository: misc
-          coordinates: directory=bibtex
-          assets: filename=figshare_articles_all.csv
-          filename: ./output/figshare_articles_all.csv        
 
       - name: Upload artifacts
         if: ${{ !cancelled() && steps.bibliography.outcome == 'success' }}
