@@ -39,6 +39,10 @@ def generate_statistics(all_csv='figshare_articles_all.csv', dedup_csv='figshare
         if 'online_year' not in df_dedup.columns:
             return "Error: Required column (online_year) not found in deduplicated CSV."
         
+        for frame in (df_all, df_dedup):
+            frame['online_year'] = frame['online_year'].apply(
+                lambda year: str(int(year)) if pd.notna(year) else 'Undated')
+
         # Group by author and year, count publications per author
         stats = df_all.groupby(['author', 'online_year']).size().reset_index(name='count')
         
@@ -46,7 +50,10 @@ def generate_statistics(all_csv='figshare_articles_all.csv', dedup_csv='figshare
         pivot = stats.pivot(index='author', columns='online_year', values='count').fillna(0).astype(int)
         
         # Sort columns (years) in descending order (most recent first)
-        pivot = pivot[sorted(pivot.columns, reverse=True)]
+        years = sorted((year for year in pivot.columns if year != 'Undated'), reverse=True)
+        if 'Undated' in pivot.columns:
+            years.append('Undated')
+        pivot = pivot[years]
         
         # Calculate total per author (from their individual publications)
         pivot['Total'] = pivot.sum(axis=1)
@@ -58,7 +65,7 @@ def generate_statistics(all_csv='figshare_articles_all.csv', dedup_csv='figshare
         dedup_by_year = df_dedup.groupby('online_year').size()
         
         # Generate markdown table
-        md_lines = ["# Publication Statistics by Author and Year", ""]
+        md_lines = ["# Publication statistics by author and year", ""]
         md_lines.append(f"**Total Authors:** {len(pivot)}\n")
         md_lines.append(f"**Total Publications (deduplicated):** {len(df_dedup)}\n")
         md_lines.append("")
@@ -108,4 +115,6 @@ if __name__ == "__main__":
     # Generate and print statistics
     stats = generate_statistics(args.all_csv, args.dedup_csv)
     print(stats)
+    if stats.startswith("Error"):
+        raise SystemExit(1)
 

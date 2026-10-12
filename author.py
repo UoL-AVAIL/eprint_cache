@@ -19,7 +19,7 @@ class Author:
     a specific author from the Figshare repository.
     """
     
-    def __init__(self, name, user_id=None, institution_id=None, orcid=None, debug=False, rate_limit_delay=1.0, max_retries=5):
+    def __init__(self, name, user_id=None, institution_id=None, orcid=None, debug=False, rate_limit_delay=1.0, max_retries=5, fs=None):
         """Initialize an Author instance.
         
         Args:
@@ -38,7 +38,7 @@ class Author:
         self.user_id = user_id
         self.institution_id = institution_id
         self.orcid = orcid
-        self.fs = FigShare(rate_limit_delay=rate_limit_delay, max_retries=max_retries)
+        self.fs = fs if fs is not None else FigShare(rate_limit_delay=rate_limit_delay, max_retries=max_retries)
         self.articles = {}
         self.public_html_prefix = "https://repository.lincoln.ac.uk"
         self.df = None
@@ -112,12 +112,32 @@ class Author:
         """
         for article in self.articles:
             self.logger.info(f"retrieving details for article {article['id']}")
-            article['details'] = self.fs.get_article(article['id'], use_cache=use_cache)
+            article['details'] = self.fs.get_article(
+                article['id'], use_cache=use_cache, revision=article.get('modified_date'))
+            if not isinstance(article['details'].get('authors'), list):
+                raise RuntimeError(f"Article {article['id']} is missing its author metadata")
 
     def _remove_non_repository(self):
         self.logger.info(f"removing non-repository articles out of {len(self.articles)}")
-        self.articles = [a for a in self.articles if a['url_public_html'].startswith(self.public_html_prefix)]
+        self.articles = [a for a in self.articles if a.get('url_public_html', '').startswith(self.public_html_prefix + '/')]
         self.logger.info(f"retained {len(self.articles)} articles")
+
+    def _remove_other_authors(self):
+        """Reject name-search matches that belong to a different author."""
+        def normalise_name(name):
+            return ' '.join(name.casefold().split())
+
+        def matches(candidate):
+            if self.user_id is not None:
+                return str(candidate.get('id')) == str(self.user_id)
+            candidate_orcid = (candidate.get('orcid_id') or '').removeprefix('https://orcid.org/')
+            expected_orcid = (self.orcid or '').removeprefix('https://orcid.org/')
+            if expected_orcid and candidate_orcid:
+                return expected_orcid == candidate_orcid
+            return normalise_name(candidate.get('full_name', '')) == normalise_name(self.name)
+
+        self.articles = [article for article in self.articles
+                         if any(matches(candidate) for candidate in article['details'].get('authors', []))]
 
     def _custom_fields_to_dicts(self):
         for article in self.articles:
@@ -216,24 +236,34 @@ class Author:
         
         # add column with online date (as datetime object)
         if 'timeline/firstOnline' in self.df.columns:
-            self.df['online_date'] = pd.to_datetime(self.df['timeline/firstOnline'], utc=True)
+            self.df['online_date'] = pd.to_datetime(self.df['timeline/firstOnline'], utc=True, errors='coerce', format='mixed')
         else:
             self.logger.warning(f"'timeline/firstOnline' field not found, setting online_date to NaT")
-            self.df['online_date'] = pd.NaT
+            self.df['online_date'] = pd.Series(pd.NaT, index=self.df.index, dtype='datetime64[ns, UTC]')
         
-        # add column with online year
-        self.df['online_year'] = self.df['online_date'].apply(
-            lambda x: x.year if pd.notna(x) else None
-        )
-        
-        # add column with external DOI, parsed from custom_fields
-        if 'details/custom_fields/External DOI' in self.df.columns:
-            self.df['External DOI'] = self.df['details/custom_fields/External DOI'].apply(
-                lambda x: re.sub(r'^(?:https?://doi\.org/|doi:)', '', x[0], flags=re.IGNORECASE).replace('doi:','')
-                if isinstance(x, list) and len(x) > 0 else None
-            )
-        else:
-            self.logger.warning(f"'details/custom_fields/External DOI' field not found, setting External DOI to None")
-            self.df['External DOI'] = None
+        # Keep repository posting dates separate from publication dates.
+        # Undated accepted manuscripts remain undated in the publication statistics.
+        if 'details/timeline/publisherPublication' in self.df.columns:
+            publication_date = pd.to_datetime(
+                self.df['details/timeline/publisherPublication'], utc=True,
+                errors='coerce', format='mixed')
+            self.df['online_date'] = self.df['online_date'].fillna(publication_date)
+        self.df['online_year'] = self.df['online_date'].dt.year.astype('Int64')
+
+        def normalise_doi(value):
+            if isinstance(value, list):
+                value = value[0] if value else None
+            if not isinstance(value, str):
+                return None
+            value = re.sub(r'^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)', '',
+                           value.strip(), flags=re.IGNORECASE)
+            return value if re.match(r'^10\.\d{4,9}/\S+$', value) else None
+
+        external = self.df.get('details/custom_fields/External DOI',
+                               pd.Series(None, index=self.df.index, dtype=object))
+        self.df['External DOI'] = external.map(normalise_doi)
+        resource = self.df.get('details/resource_doi',
+                               pd.Series(None, index=self.df.index, dtype=object))
+        self.df['External DOI'] = self.df['External DOI'].fillna(resource.map(normalise_doi))
 
         return self.df

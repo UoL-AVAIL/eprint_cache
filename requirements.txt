@@ -1,12 +1,5 @@
-bibtexparser
-doi2bib
-Flask
-flatten-dict
-networkx
-numpy
-pandas
-PyYAML
-requests
-pip
-aiohttp
-yake
+bibtexparser>=1.4,<2
+flatten-dict>=0.4,<0.5
+pandas>=2.2,<3
+PyYAML>=6,<7
+requests>=2.32,<3

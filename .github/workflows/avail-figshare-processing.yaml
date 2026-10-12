@@ -20,6 +20,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 concurrency:
   group: avail-figshare-processing-${{ github.ref }}
   cancel-in-progress: true
@@ -27,33 +30,30 @@ concurrency:
 jobs:
   update-cache:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      NEXUS_USERNAME: ${{ secrets.AVAIL_REGISTRY_PUSHER }}
+      NEXUS_PASSWORD: ${{ secrets.AVAIL_REGISTRY_TOKEN }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
       - name: Use Cache in folder ./output
         id: cache-restore-output
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v4
         with:
           path: ./output
-          key: cache-files-${{ github.run_id }}
+          key: avail-v2-cache-files-${{ github.run_id }}
           restore-keys: |
-            cache-files-
+            avail-v2-cache-files-
 
       - name: Create output directory if it doesn't exist
         run: |
           mkdir -p output
-          find ./output 
-
-      - run: echo "🎉 The job was automatically triggered by a ${{ github.event_name }} event."
-
-      - run: |
-          git config --global user.name 'AVAIL GitHub'
-          git config --global user.email 'avail@lincoln.ac.uk'
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           
@@ -63,6 +63,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-frozen.txt
           
+      - name: Run regression tests
+        run: python -m unittest discover -s tests -v
+
       - name: Run figshare fetch (Step 1 - Retrieve articles and create CSV)
         env:
           FIGSHARE_TOKEN: ${{ secrets.FIGSHARE_TOKEN }}
@@ -71,33 +74,34 @@ jobs:
           cd ./output
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.use_author_cache }}" = "true" ]; then
             echo "Running figshare_fetch.py with --use-author-cache (manually triggered)"
-            python ../figshare_fetch.py --use-author-cache -c ../avail-authors.yaml --max-retries 30 --rate-limit-delay 0.1
+            python ../figshare_fetch.py --use-author-cache -c ../avail-authors.yaml --max-retries 3 --rate-limit-delay 1.0
           else
             echo "Running figshare_fetch.py without cache (default behavior)"
-            python ../figshare_fetch.py -c ../avail-authors.yaml --max-retries 30 --rate-limit-delay 0.1
+            python ../figshare_fetch.py -c ../avail-authors.yaml --max-retries 3 --rate-limit-delay 1.0
           fi
       
       - name: Run figshare bibtex (Step 2 - Generate bibtex from CSV)
+        id: bibliography
         run: |
           set -e
           cd ./output
           echo "Running figshare_bibtex.py to generate bibtex from CSV"
-          python ../figshare_bibtex.py
+          python ../figshare_bibtex.py -o avail.bib
 
       - name: Save Cache from folder ./output
         if: always()
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v4
         with:
           path: ./output
-          key: ${{ steps.cache-restore-output.outputs.cache-primary-key || 'cache-files' }}
+          key: ${{ steps.cache-restore-output.outputs.cache-primary-key || 'avail-v2-cache-files' }}
 
       - name: Generate publication statistics
         run: |
           cd ./output
-          python ../generate_stats.py --all-csv figshare_articles_all.csv --dedup-csv figshare_articles.csv >> $GITHUB_STEP_SUMMARY
+          python ../generate_stats.py --all-csv figshare_articles_all.csv --dedup-csv figshare_articles.csv >> "$GITHUB_STEP_SUMMARY"
 
       - name: Nexus Repo Publish bibtex
-        if: ${{ github.event_name != 'pull_request' }}
+        if: ${{ github.event_name != 'pull_request' && env.NEXUS_USERNAME != '' && env.NEXUS_PASSWORD != '' }}
         uses: sonatype-nexus-community/nexus-repo-github-action@master
         with:
           serverUrl: https://avail.lincoln.ac.uk/repository/
@@ -110,7 +114,7 @@ jobs:
           filename: ./output/avail.bib
 
       - name: Nexus Repo Publish figshare articles without duplicates CSV
-        if: ${{ github.event_name != 'pull_request' }}
+        if: ${{ github.event_name != 'pull_request' && env.NEXUS_USERNAME != '' && env.NEXUS_PASSWORD != '' }}
         uses: sonatype-nexus-community/nexus-repo-github-action@master
         with:
           serverUrl: https://avail.lincoln.ac.uk/repository/
@@ -123,7 +127,7 @@ jobs:
           filename: ./output/figshare_articles.csv
 
       - name: Nexus Repo Publish all figshare articles CSV
-        if: ${{ github.event_name != 'pull_request' }}
+        if: ${{ github.event_name != 'pull_request' && env.NEXUS_USERNAME != '' && env.NEXUS_PASSWORD != '' }}
         uses: sonatype-nexus-community/nexus-repo-github-action@master
         with:
           serverUrl: https://avail.lincoln.ac.uk/repository/
@@ -136,7 +140,7 @@ jobs:
           filename: ./output/figshare_articles_all.csv        
 
       - name: Upload artifacts
-        if: always()
+        if: ${{ !cancelled() && steps.bibliography.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: outputs

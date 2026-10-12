@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 from requests import get, post
+from requests.exceptions import ConnectionError, Timeout
 import shelve
 import time
 import os
@@ -10,12 +11,14 @@ from logging import getLogger, INFO
 
 class FigShare:
     def __init__(self, page_size=100, rate_limit_delay=1.0, max_retries=5):
+        if page_size < 1 or rate_limit_delay < 0 or max_retries < 1:
+            raise ValueError("page_size and max_retries must be positive; delay cannot be negative")
         self.logger = getLogger("FigShare")
         self.token = os.getenv('FIGSHARE_TOKEN')
         if self.token:
             self.logger.info("Figshare API: Using authenticated requests")
         else:
-            self.logger.warning("Figshare API: No authentication token found - using anonymous requests (may hit rate limits or receive 403 errors)")
+            self.logger.info("Figshare API: Using public requests without authentication")
         self.page_size = page_size
         self.rate_limit_delay = rate_limit_delay
         self.max_retries = max_retries
@@ -38,106 +41,50 @@ class FigShare:
             "page_size": self.page_size
         }
 
-    def __handle_403_error(self, url, method="GET", response_text=""):
-        """Handle 403 Forbidden errors with helpful messages"""
-        if not self.token:
-            self.logger.error(f"403 Forbidden for {method} {self.base_url + url}: "
-                            f"Authentication required. Set FIGSHARE_TOKEN environment variable. "
-                            f"See README.md for instructions.")
-        else:
-            self.logger.error(f"403 Forbidden for {method} {self.base_url + url}: "
-                            f"Token may be invalid or lack permissions. "
-                            f"Check token in Figshare account settings.")
-        if response_text:
-            self.logger.error(f"Response text: {response_text}")
-
-    def __get(self, url, params=None, use_cache=True):
-        hash_key = f"GET{url}{'?' + str(params) if params else ''}"
-        
+    def _request(self, method, url, params=None, use_cache=True, revision=None):
+        """Cache successful responses; retry only temporary failures."""
+        cache_key = f"v2:{method}:{url}:{params}:{revision}"
         with shelve.open(self.cache_file) as cache:
-            if hash_key in cache and use_cache:
-                self.logger.info(f"Cache hit for GET {url}")
-                return cache[hash_key]
-            
-            headers = { "Authorization": "token " + self.token } if self.token else {}
-            
-            # Retry logic for 403 errors
-            for attempt in range(self.max_retries):
-                response = get(self.base_url + url, headers=headers, params=params)
-                
-                # Handle 403 Forbidden errors with retry logic
-                if response.status_code == 403:
-                    if attempt < self.max_retries - 1:
-                        # Exponential backoff: 1s, 2s, 4s, 8s, 16s
-                        wait_time = 2 ** attempt
-                        self.logger.warning(f"403 Forbidden for GET {url} (attempt {attempt + 1}/{self.max_retries}), retrying in {wait_time}s...")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        # Final attempt failed, log error and return
-                        self.__handle_403_error(url, "GET", response.text)
-                        return {}
-                
-                # Success - break out of retry loop
-                break
+            if use_cache and cache_key in cache:
+                return cache[cache_key]
 
-            # Rate limiting: sleep after each API request
-            if self.rate_limit_delay > 0:
-                time.sleep(self.rate_limit_delay)
-            
-            # Check if response is valid and contains JSON
-            if response.ok and response.headers.get('Content-Type', '').lower().startswith('application/json') and response.text.strip():
-                result = response.json()
-                cache[hash_key] = result
-                self.logger.debug(f"Cached result for GET {url}")
-                return result
-            else:
-                self.logger.warning(f"Received empty or invalid JSON response for GET {self.base_url + url} (status: {response.status_code})")
-                return {}
+            headers = {"Authorization": "token " + self.token} if self.token else {}
+            for attempt in range(self.max_retries):
+                try:
+                    if method == "GET":
+                        response = get(self.base_url + url, headers=headers,
+                                       params=params, timeout=30)
+                    else:
+                        response = post(self.base_url + url, headers=headers,
+                                        json=params, timeout=30)
+                except (ConnectionError, Timeout) as error:
+                    if attempt == self.max_retries - 1:
+                        raise RuntimeError(f"Figshare {method} {url} failed: {error}") from error
+                else:
+                    if response.status_code not in {429, 500, 502, 503, 504}:
+                        response.raise_for_status()
+                        try:
+                            result = response.json()
+                        except ValueError as error:
+                            raise RuntimeError(f"Figshare {method} {url} returned invalid JSON") from error
+                        expected_type = dict if method == "GET" else list
+                        if not isinstance(result, expected_type) or (method == "GET" and not result):
+                            raise RuntimeError(f"Unexpected response from Figshare {method} {url}")
+                        cache[cache_key] = result
+                        if self.rate_limit_delay:
+                            time.sleep(self.rate_limit_delay)
+                        return result
+                    if attempt == self.max_retries - 1:
+                        response.raise_for_status()
+                delay = min(2 ** attempt, 30)
+                self.logger.warning("Temporary Figshare failure; retrying in %s seconds", delay)
+                time.sleep(max(delay, self.rate_limit_delay))
+
+    def __get(self, url, params=None, use_cache=True, revision=None):
+        return self._request("GET", url, params, use_cache, revision)
 
     def __post(self, url, params=None, use_cache=True):
-        hash_key = f"POST{url}{'?' + str(params) if params else ''}"
-        
-        with shelve.open(self.cache_file) as cache:
-            if hash_key in cache and use_cache:
-                self.logger.debug(f"Cache hit for POST {url}")
-                return cache[hash_key]
-            
-            headers = { "Authorization": "token " + self.token } if self.token else {}
-            
-            # Retry logic for 403 errors
-            for attempt in range(self.max_retries):
-                response = post(self.base_url + url, headers=headers, json=params)
-                
-                # Handle 403 Forbidden errors with retry logic
-                if response.status_code == 403:
-                    if attempt < self.max_retries - 1:
-                        # Exponential backoff: 1s, 2s, 4s, 8s, 16s
-                        wait_time = 2 ** attempt
-                        self.logger.warning(f"403 Forbidden for POST {url} (attempt {attempt + 1}/{self.max_retries}), retrying in {wait_time}s...")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        # Final attempt failed, log error and return
-                        self.__handle_403_error(url, "POST", response.text)
-                        return []
-                
-                # Success - break out of retry loop
-                break
-            
-            # Rate limiting: sleep after each API request
-            if self.rate_limit_delay > 0:
-                time.sleep(self.rate_limit_delay)
-            
-            # Check if response is valid and contains JSON
-            if response.ok and response.headers.get('Content-Type', '').lower().startswith('application/json') and response.text.strip():
-                result = response.json()
-                cache[hash_key] = result
-                self.logger.debug(f"Cached result for POST {url}")
-                return result
-            else:
-                self.logger.warning(f"Received empty or invalid JSON response for POST {self.base_url + url} (status: {response.status_code})")
-                return []
+        return self._request("POST", url, params, use_cache)
 
     def articles_by_author(self, author_name, user_id=None, institution_id=None, use_cache=True):
         """Search for articles by author name with optional institution filtering.
@@ -229,8 +176,8 @@ class FigShare:
 
         return articles
     
-    def get_article(self, article_id, use_cache=True):
-        return self.__get(f"/articles/{article_id}", use_cache=use_cache)
+    def get_article(self, article_id, use_cache=True, revision=None):
+        return self.__get(f"/articles/{article_id}", use_cache=use_cache, revision=revision)
     
     def search_authors(self, params, use_cache=True):
         """Search for authors using the Figshare account API.

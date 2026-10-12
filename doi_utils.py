@@ -45,7 +45,7 @@ def guess_doi_from_crossref(title, author):
         try:
             
             logger.debug(f"Querying Crossref for title: {title}")
-            response = requests.get(base_url, params=params)
+            response = requests.get(base_url, params=params, timeout=30)
             response.raise_for_status()
             
             # Check if response is valid and contains JSON

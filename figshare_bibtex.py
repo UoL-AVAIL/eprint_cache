@@ -1,166 +1,103 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
-"""
-Script 2: Read CSV files and generate bibtex from article details
+"""Generate an AVAIL bibliography, retaining records without resolvable DOIs."""
 
-This script:
-1. Reads the deduplicated CSV file produced by figshare_fetch.py
-2. Retrieves article details and DOIs
-3. Generates bibtex entries for each article
-4. Exports bibtex files
-"""
+import argparse
+import ast
+import logging
+import re
 
-import pandas as pd
 import bibtexparser
 from bibtexparser.bibdatabase import BibDatabase
-import argparse
-import re
-from logging import getLogger, basicConfig, INFO, DEBUG
+import pandas as pd
 
 from doi2bib import doi2bib
-from doi_utils import guess_doi_from_crossref
 
-basicConfig(level=INFO)
-logger = getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
-def parse_args():
-    """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Read CSV file and generate bibtex entries from article details.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-    parser.add_argument('-i', '--input', type=str, default='figshare_articles.csv',
-                        help='Input CSV filename (deduplicated articles from figshare_fetch.py)')
-    parser.add_argument('-o', '--output', type=str, default='lcas.bib',
-                        help='Output bibtex filename')
-    parser.add_argument('--debug', action='store_true',
-                        help='Enable debug logging')
-    
-    return parser.parse_args()
+def text_value(row, column):
+    value = row.get(column)
+    return value.strip() if isinstance(value, str) else ''
 
 
-def guess_doi(article_row):
-    """
-    Use crossref API to guess the DOI for an article based on the title and authors
-    """
-    if 'title' not in article_row or not article_row['title']:
-        logger.warning("No title found for article, can't guess DOI")
-        return None
-    
-    title = article_row['title']
-    author = article_row['author']
-    
-    return guess_doi_from_crossref(title, author)
+def metadata_entry(row):
+    """Use repository metadata when DOI content negotiation is unavailable."""
+    article_id = int(row['id'])
+    entry = {'ID': f'figshare{article_id}', 'ENTRYTYPE': 'misc',
+             'title': text_value(row, 'title'), 'url': text_value(row, 'url_public_html')}
+    authors = row.get('details/authors', [])
+    if isinstance(authors, str):
+        authors = ast.literal_eval(authors)
+    if isinstance(authors, list) and authors:
+        entry['author'] = ' and '.join(author['full_name'] for author in authors)
+    publication_type = text_value(row, 'defined_type_name')
+    publication = text_value(row, 'details/custom_fields/Publication Title')
+    if publication_type == 'journal contribution':
+        entry['ENTRYTYPE'] = 'article'
+        if publication:
+            entry['journal'] = publication
+    elif publication_type == 'conference contribution':
+        entry['ENTRYTYPE'] = 'inproceedings'
+        if publication:
+            entry['booktitle'] = publication
+    year = row.get('online_year')
+    if pd.notna(year):
+        entry['year'] = str(int(year))
+    for field, column in [('publisher', 'Publisher'), ('volume', 'Volume'),
+                          ('number', 'Issue'), ('pages', 'Pages/Article Number')]:
+        value = text_value(row, f'details/custom_fields/{column}')
+        if value:
+            entry[field] = value
+    doi = text_value(row, 'External DOI')
+    if doi:
+        entry['doi'] = doi
+    return entry
 
 
-def retrieve_bibtex_from_dois(df):
-    """
-    Retrieve bibtex entries for all articles in the dataframe
-    """
-    if df is None or len(df) == 0:
-        logger.warning(f"no dataframe provided, can't continue")
-        return df
-    
-    doi2bibber = doi2bib()
-    
-    # Add bibtex columns if they don't exist
-    if 'bibtex' not in df.columns:
-        df['bibtex'] = None
-    if 'bibtex_str' not in df.columns:
-        df['bibtex_str'] = None
-    
-    # Iterate over all rows in the dataframe
-    for index, row in df.iterrows():
-        doi = row['External DOI'] if 'External DOI' in row else None
-        
-        # Check if DOI is in valid format
-        if doi and isinstance(doi, str):
-            # Basic DOI validation - should start with 10. followed by numbers/dots/hyphens
-            if not doi.startswith('10.') or not len(doi.split('/', 1)) == 2:
-                logger.warning(f"Invalid DOI format: {doi}, will try to guess")
-                doi = None
-        else:
-            logger.info(f"No DOI defined in record for article, will try to guess")
-            doi = None
-        
-        if doi is None:
-            doi = guess_doi(row)
-            if doi is None:
-                logger.debug(f"Unable to guess DOI for article, no option left but to skip it")
-                continue
-            logger.info(f"Guessed DOI for article: {doi}, updating dataframe")
-            df.at[index, 'External DOI'] = doi
-        
-        try:
-            bibtex = doi2bibber.get_bibtex_entry(doi)
-            # Update the dataframe with the bibtex information
-            if bibtex is not None:
-                df.at[index, 'bibtex'] = bibtex
-                df.at[index, 'bibtex_str'] = doi2bibber.entries_to_str([bibtex])
-                logger.info(f"got bibtex for {doi}")
-            else:
-                logger.warning(f"Couldn't get bibtex for {doi}")
-
-        except Exception as e:
-            logger.warning(f"Failed to get bibtex for {doi}: {e}")
-    
-    return df
+def build_bibliography(df, resolver):
+    if df.empty or not {'id', 'title'}.issubset(df.columns):
+        raise ValueError('Input must contain publications with id and title columns')
+    entries = {}
+    fallbacks = 0
+    for _, row in df.iterrows():
+        doi = text_value(row, 'External DOI')
+        key = doi.casefold() if doi else f"figshare:{int(row['id'])}"
+        if key in entries:
+            continue
+        entry = None
+        if re.match(r'^10\.\d{4,9}/\S+$', doi):
+            try:
+                entry = resolver.get_bibtex_entry(doi)
+            except Exception as error:
+                logger.warning('DOI lookup failed for %s: %s', doi, error)
+        if not entry:
+            entry = metadata_entry(row)
+            fallbacks += 1
+        # The same publication may have multiple Figshare deposits.
+        entries[key] = entry
+    database = BibDatabase()
+    database.entries = list(entries.values())
+    logger.info('Created %s entries; %s records used repository metadata',
+                len(database.entries), fallbacks)
+    return database
 
 
 def figshare_bibtex():
-    """
-    Read CSV file and generate bibtex entries from article details.
-    
-    This function:
-    1. Reads the deduplicated CSV file
-    2. Retrieves bibtex for each article based on DOI
-    3. Exports bibtex file
-    """
-    args = parse_args()
-    
-    if args.debug:
-        logger.setLevel(DEBUG)
-    
-    # Check if input file exists
-    import os
-    if not os.path.exists(args.input):
-        logger.error(f"Input file {args.input} not found. Please run figshare_fetch.py first.")
-        return
-    
-    logger.info(f"Reading articles from {args.input}")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('-i', '--input', default='figshare_articles.csv')
+    parser.add_argument('-o', '--output', default='avail.bib')
+    parser.add_argument('--debug', action='store_true')
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
     df = pd.read_csv(args.input, encoding='utf-8')
-    logger.info(f"Loaded {len(df)} articles from CSV")
-    
-    # Retrieve bibtex for all articles
-    logger.info("Retrieving bibtex entries for all articles...")
-    df = retrieve_bibtex_from_dois(df)
-    
-    # Export bibtex file
-    bibtex_filename = args.output
-    bibtex = BibDatabase()
-    bibtex.entries = [entry for entry in df['bibtex'].tolist() if isinstance(entry, dict)]
-    
-    # Process all entries in the bibtex database and remove any duplicates based on ID
-    unique_entries = {}
-    for entry in bibtex.entries:
-        if entry and 'ID' in entry:
-            # Use ID as the key to avoid duplicates
-            unique_entries[entry['ID']] = entry
-        else:
-            logger.debug(f"Skipping entry without ID: {entry}")
-
-    logger.info(f"Reduced from {len(bibtex.entries)} to {len(unique_entries)} unique bibtex entries")
-    
-    # Replace the entries with the unique ones
-    bibtex.entries = list(unique_entries.values())
-    
-    with open(bibtex_filename, 'w') as f:
-        f.write(bibtexparser.dumps(bibtex))
-    
-    logger.info(f"Saved {len(unique_entries)} bibtex entries to {bibtex_filename}")
-    logger.info("Bibtex generation complete")
+    database = build_bibliography(df, doi2bib())
+    with open(args.output, 'w', encoding='utf-8') as output:
+        output.write(bibtexparser.dumps(database))
 
 
-if __name__ == "__main__":
-    figshare_bibtex()
+if __name__ == '__main__':
+    try:
+        figshare_bibtex()
+    except Exception as error:
+        logger.error('Bibliography export failed: %s', error)
+        raise SystemExit(1)

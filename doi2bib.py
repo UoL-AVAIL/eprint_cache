@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import calendar
+import hashlib
 import urllib.request
 import requests
 import bibtexparser
@@ -31,7 +33,7 @@ class doi2bib:
             quoted_doi = urllib.request.quote(doi)
             url = 'http://shortdoi.org/{}?format=json'.format(quoted_doi)
             try:
-                response = requests.get(url)
+                response = requests.get(url, timeout=30)
                 # Check if response is valid and contains JSON
                 if response.ok and response.headers.get('Content-Type', '').lower().startswith('application/json') and response.text.strip():
                     result = response.json()
@@ -59,7 +61,7 @@ class doi2bib:
             header = {
                 'Accept': 'application/x-bibtex',
             }
-            response = requests.get(url, headers=header)
+            response = requests.get(url, headers=header, timeout=30)
             if not response.ok:
                 self.logger.warning(f"failed to get bibtex for {doi}, status code {response.status_code}")
                 return ""
@@ -80,8 +82,11 @@ class doi2bib:
         if not bibtext:
             return None
 
-        short_doi = self.shorten(doi)
         parser = BibTexParser()
+        # Some publishers emit full month names as unquoted BibTeX macros.
+        parser.bib_database.strings.update(
+            {month.casefold(): month for month in calendar.month_name[1:]})
+        parser.bib_database.strings['sept'] = 'September'
         parser.ignore_nonstandard_types = False
         bibdb = bibtexparser.loads(bibtext, parser)
         entry, = bibdb.entries
@@ -100,7 +105,7 @@ class doi2bib:
         entry['link'] = 'https://doi.org/{}'.format(quoted_doi)
         if 'author' in entry:
             entry['author'] = ' and '.join(entry['author'].rstrip(';').split('; '))
-        entry['ID'] = short_doi[3:]
+        entry['ID'] = 'doi' + hashlib.sha256(doi.casefold().encode('utf-8')).hexdigest()[:16]
         return entry
 
     def entries_to_str(self, entries):

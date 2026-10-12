@@ -12,3 +12,8 @@ output/
 *.bib
 *.db-wal
 *.db-shm
+
+*.db.*
+*.cache.json
+bibtext_cache*
+shortdoi_cache*

@@ -1,18 +1,20 @@
-# the institution ID is used to ensure only authors from a specific institution are included
-
+# ORCIDs verified against public Lincoln Figshare metadata on 12 October 2026.
 filters:
-  # is_active: true
-  # is_public: true
-  # filter by group ID (set to None to disable)
-  instituion_id: 1068
-
+  institution_id: 1068
 authors:
-  - name: "Miao Yu"
-  - name: "John Atanbori"
-  - name: "Bashir Al-Diri"
-  - name: "James Brown"
-    orcid: "0000-0001-7636-4554"
-  - name: "Christos Frantzidis"
-  - name: "Wenting Duan"
-  - name: "Mamatha Thota"
-  - name: "Farhan Riaz"
+- name: Miao Yu
+  orcid: 0000-0001-6576-9564
+- name: John Atanbori
+  orcid: 0000-0003-2307-2720
+- name: Bashir Al-Diri
+  orcid: 0000-0002-9526-9058
+- name: James Brown
+  orcid: 0000-0001-7636-4554
+- name: Christos Frantzidis
+  orcid: 0000-0002-8372-8915
+- name: Wenting Duan
+  orcid: 0000-0001-9665-4890
+- name: Mamatha Thota
+  orcid: 0000-0001-6553-4028
+- name: Farhan Riaz
+  orcid: 0000-0002-8669-7165

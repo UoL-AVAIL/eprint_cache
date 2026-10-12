@@ -1,187 +1,92 @@
-# LCAS EPrint Cache
+# AVAIL publication cache
 
-This repository automatically exports and caches publication data from Figshare for LCAS (Lincoln Centre for Autonomous Systems) researchers.
+This repository collates public University of Lincoln Figshare publications for the researchers in [avail-authors.yaml](avail-authors.yaml). It produces CSV exports, an AVAIL bibliography and publication statistics. Only the AVAIL workflow is enabled; inherited scripts and configurations are retained as historical files.
 
-## Overview
+## Local setup
 
-The system:
-- Retrieves publication metadata from Figshare repository
-- Processes author information and generates BibTeX entries
-- Exports data in CSV and BibTeX formats
-- Publishes to Nexus repository for public access
-
-## Setup
-
-### Prerequisites
-
-- Python 3.10+
-- Figshare API token (required)
-
-### Configuration
-
-#### Figshare API Token
-
-This application requires a Figshare API token to function properly. To set up:
-
-1. **Create a Figshare account**: Visit [https://figshare.com](https://figshare.com) and create an account
-2. **Generate an API token**:
-   - Log in to Figshare
-   - Go to Account Settings → Applications
-   - Create a new personal token
-   - Copy the token securely
-3. **For local development**: Set the environment variable
-   ```bash
-   export FIGSHARE_TOKEN="your_token_here"
-   ```
-4. **For GitHub Actions**: Add the token as a repository secret named `FIGSHARE_TOKEN`
-   - Go to repository Settings → Secrets and variables → Actions
-   - Create a new secret named `FIGSHARE_TOKEN`
-   - Paste your Figshare API token
-
-**Note**: Without a valid API token, requests to the Figshare API will fail with 403 errors.
-
-### Installation
+Use Python 3.10 or later and a virtual environment:
 
 ```bash
-# Install dependencies
-pip install -r requirements-frozen.txt
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-frozen.txt
+mkdir -p output
+cd output
+python ../figshare_fetch.py -c ../avail-authors.yaml
+python ../figshare_bibtex.py -o avail.bib
+python ../generate_stats.py > publication-statistics.md
 ```
 
-## Usage
+Run from `output` to keep exports and caches together. Public retrieval does not require a Figshare account or API token. An optional `FIGSHARE_TOKEN` environment variable authenticates requests; invalid credentials cause an explicit failure.
 
-### Command Line
+The exports are:
+
+| File | Contents |
+| --- | --- |
+| `figshare_articles.csv` | One row per Figshare article, with all matching group members in `authors` |
+| `figshare_articles_all.csv` | One row per article per matching group member |
+| `avail.bib` | BibTeX entries from DOI lookups, with repository metadata as a fallback |
+| `publication-statistics.md` | Counts per researcher and publication year, including undated records |
+| `{author}.csv` | Publications attributed to one configured researcher |
+
+CSV deduplication uses the Figshare article ID. Separate deposits of the same paper can therefore remain separate rows. BibTeX deduplication also merges entries that share an external DOI.
+
+## Author configuration and attribution
+
+The YAML configuration contains an institution filter and author names:
+
+```yaml
+filters:
+  institution_id: 1068
+
+authors:
+  - name: "James Brown"
+    orcid: "0000-0001-7636-4554"
+```
+
+Searches use names within Lincoln's repository. The exporter checks the full author metadata for each result. A configured `user_id` requires the matching Figshare author ID. Otherwise, an ORCID is matched when both the configuration and the record contain one; records without an ORCID fall back to an exact name match, ignoring case and repeated spaces. An explicit conflicting ORCID is rejected. Names with variants may need separate investigation or a corrected search name. The exporter does not use the private account author-search endpoint or guess which author to select from ambiguous search results.
+
+The roster defines whose outputs to include; publications co-authored with people outside the group retain their full author list in BibTeX. Retrieval covers public Lincoln records of all dates and repository item types. Private records and unpublished deposits are excluded by the public API.
+
+## Dates and bibliographic completeness
+
+Publication years use Figshare's `firstOnline` date, with `publisherPublication` as a fallback. Repository posting dates and manuscript acceptance dates are not treated as publication dates. Records without either publication date appear in an `Undated` statistics column and still contribute to totals.
+
+DOIs are read from the `External DOI` custom field or `resource_doi`. The exporter accepts both string and list representations. It does not guess DOIs from titles. If a DOI is absent or its bibliography lookup fails, a BibTeX entry is built from the repository title, full author list and available publication metadata. Such entries may have fewer fields than a publisher's entry; inspect them before using the bibliography in a manuscript.
+
+## Refreshing and failures
+
+By default, each run searches again for publications and reuses article details only when their `modified_date` has not changed. Complete author exports can be reused explicitly:
 
 ```bash
-# Run with default authors list
-python figshare.py
-
-# Run with specific authors
-python figshare.py --authors "Marc Hanheide" "Tom Duckett"
-
-# Run with authors from file
-python figshare.py --authors-file staff.json
-
-# Force refresh (ignore cache)
-python figshare.py --force-refresh
-
-# Adjust rate limiting (default is 1 second delay between requests)
-python figshare.py --rate-limit-delay 2.0
-
-# Enable debug logging
-python figshare.py --debug
-
-# Custom output filenames
-python figshare.py --output my_articles.csv --output-all my_articles_all.csv
+python ../figshare_fetch.py -c ../avail-authors.yaml --use-author-cache
 ```
 
-### Arguments
+This option may omit new publications. Author caches are checked against the configured identity and filters. Remove the ignored `output` directory to start without caches.
 
-- `-a, --authors`: List of author names to process
-- `-f, --authors-file`: Path to file containing author names (one per line)
-- `-s, --since`: Process only publications since this date (YYYY-MM-DD), default: 2021-01-01
-- `-o, --output`: Output CSV filename for deduplicated publications, default: figshare_articles.csv
-- `-O, --output-all`: Output CSV filename for all publications (with duplicates), default: figshare_articles_all.csv
-- `--force-refresh`: Force refresh data instead of loading from cache
-- `--rate-limit-delay`: Delay in seconds between Figshare API requests, default: 1.0
-- `--debug`: Enable debug logging
+The default delay is one second between Figshare requests. Temporary connection failures and HTTP 429/5xx responses have three attempts by default, with bounded backoff. HTTP 401/403 and invalid responses fail immediately. Network requests have a 30-second timeout. A failed search exits unsuccessfully before replacing either group CSV; a genuine empty result for an individual researcher is logged as a warning. If every researcher has no matching publications, the run fails.
 
-## Output Files
+Use `--debug` for additional logging. `--output`, `--output-all`, `--max-retries` and `--rate-limit-delay` customise fetching; BibTeX supports `--input` and `--output`.
 
-The script generates several output files:
+## GitHub Actions
 
-- `lcas.bib`: Combined BibTeX file with all publications (deduplicated)
-- `figshare_articles.csv`: CSV with deduplicated articles
-- `figshare_articles_all.csv`: CSV with all articles (includes duplicates when multiple authors)
-- `{author_name}.bib`: Individual BibTeX files per author
-- `{author_name}.csv`: Individual CSV files per author
-- `{author_name}.db`: Cached data per author (shelve database)
+[avail-figshare-processing.yaml](.github/workflows/avail-figshare-processing.yaml) runs on pushes and pull requests targeting `main`, on manual dispatch, and at 00:30 and 12:30 UTC each day. It runs the regression tests, retrieves the AVAIL publications, generates `avail.bib`, and adds statistics to the run summary. The job has a 60-minute limit. Successful output files are available as the `outputs` artifact for 30 days.
 
-## Cache Files
+The workflow uses an AVAIL-specific cache namespace. No LCAS or UoA11 workflows run.
 
-The application uses several cache files to minimize API calls:
+Nexus publishing is optional. For non-pull-request runs it is enabled when both repository secrets are set:
 
-- `figshare_cache.pkl`: Cached Figshare API responses
-- `bibtext_cache`: Cached BibTeX entries from DOI lookups
-- `shortdoi_cache`: Cached short DOI mappings
-- `crossref_cache.db`: Cached Crossref API responses for DOI guessing
+- `AVAIL_REGISTRY_PUSHER`: Nexus publishing username.
+- `AVAIL_REGISTRY_TOKEN`: Nexus publishing password/token.
 
-## GitHub Actions Workflow
+The configured destination is `https://avail.lincoln.ac.uk/repository/`, repository `misc`, directory `bibtex`. Without these secrets, publishing is skipped and the workflow still provides downloadable artifacts. `FIGSHARE_TOKEN` is optional. A local export does not verify Nexus credentials or publishing.
 
-The workflow runs automatically:
-- Weekly on Tuesdays at 02:30 UTC (uses cache by default)
-- On push to main branch (uses cache by default)
-- On pull requests (uses cache by default)
-- Can be manually triggered via workflow_dispatch with optional force refresh
+## Verification
 
-### Manual Workflow Trigger
-
-When manually triggering the workflow:
-1. Go to Actions → figshare-cache workflow
-2. Click "Run workflow"
-3. Choose whether to force refresh:
-   - **false** (default): Uses cached data, faster and respects rate limits
-   - **true**: Ignores cache and fetches fresh data from Figshare API
-
-**Note**: Force refresh should only be used when you need to ensure the latest data, as it makes many API requests and takes longer to complete.
-
-### Workflow Steps
-
-1. Checkout repository
-2. Restore cache
-3. Install Python dependencies
-4. Run Figshare exporter (with or without --force-refresh based on trigger)
-5. Publish results to Nexus repository
-6. Upload artifacts
-
-### Rate Limiting
-
-The script includes built-in rate limiting with a 1-second delay between API requests to avoid hitting Figshare API rate limits. This helps ensure reliable operation even with authenticated requests.
-
-## Troubleshooting
-
-### 403 Forbidden Errors
-
-If you encounter 403 errors when accessing the Figshare API:
-1. Ensure the `FIGSHARE_TOKEN` environment variable is set
-2. Verify the token is valid and hasn't expired
-3. Check that the token has appropriate permissions (read access to public articles)
-
-For detailed information about the 403 error and resolution steps, see [FIGSHARE_API_RESEARCH.md](FIGSHARE_API_RESEARCH.md).
-
-### Empty Results
-
-If no articles are found:
-- Check that author names match exactly as they appear in Figshare
-- Verify the articles are in the Lincoln repository (https://repository.lincoln.ac.uk)
-- Use `--debug` flag for detailed logging
-
-### JSON Decode Errors
-
-The application includes validation for JSON responses. If issues persist:
-- Check your internet connection
-- Verify Figshare API is accessible
-- Review logs for specific error messages
-
-## Development
-
-### Running Tests
+From the repository root, with the virtual environment activated:
 
 ```bash
-# Run with a single test author
-python figshare.py --authors "Marc Hanheide" --debug
+python -m unittest discover -s tests -v
 ```
 
-### Code Structure
-
-- `figshare.py`: Main script with FigShare API client and processing logic
-- `doi2bib`: Class for DOI to BibTeX conversion
-- `FigShare`: Class for Figshare API interactions
-- `Author`: Class for author-specific processing
-
-## License
-
-[Add license information here]
-
-## Contact
-
-For issues or questions, please open an issue in the GitHub repository.
+The tests cover API failures and retries, cache refreshes, author attribution, shared publications, DOI handling, BibTeX fallback, undated statistics and unsuccessful command exits. They use mocked network responses. Live retrieval is a separate check.
